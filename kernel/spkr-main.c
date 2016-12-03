@@ -1,14 +1,14 @@
 #include <linux/init.h>
-#include <linux/sched.h>
-#include <linux/pid.h>
-#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/moduleparam.h>
-#include <linux/fs.h>
-#include <linux/miscdevice.h>
-#include <asm/uaccess.h>
+#include <linux/version.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
+#include <linux/fs.h>
+#include <linux/wait.h>
+#include <linux/sched.h>
+#include <linux/kfifo.h>
+#include <linux/ioctl.h>
+#include <asm/uaccess.h>
 
 
 MODULE_LICENSE("Dual BSD/GPL");
