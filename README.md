@@ -16,7 +16,7 @@ Gestión del hardware del dispositivo
 
 Alta y baja del dispositivo
 
-*Status:*
+*Status:* TERMINADO
 
 - [✓] Skeleton functions for file_operations: open, write and release 
 - [✓] ON INIT: Automatic creation of /sys/class/speaker/intspkr and /dev/intspkr to access the driver
@@ -26,9 +26,10 @@ Alta y baja del dispositivo
 
 Operaciones de apertura y cierre
 
-*Status:*
+*Status:* TERMINADO
 
-- [ ] TODO ALL
+- [✓ ] Write mode: Only allow 1 file open, else: EBUSY (he usado Mutex)
+- [✓ ] Read mode: Allow infinite opens
 
 ## Step 4
 

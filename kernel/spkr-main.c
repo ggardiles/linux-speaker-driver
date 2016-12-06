@@ -9,6 +9,7 @@
 #include <linux/kfifo.h>
 #include <linux/ioctl.h>
 #include <asm/uaccess.h>
+#include <linux/mutex.h>
 
 
 MODULE_LICENSE("Dual BSD/GPL");
@@ -22,7 +23,9 @@ MODULE_VERSION("dev");
 /**	Global variables	**/
 
 static int minor = 0;
-static int Device_Open = 0;	/* Is device open?  */
+static int Device_Open_W = 0;	/* Is device open?  */
+static int local_open = 0;
+struct mutex ow_mutex;
 
 static struct cdev c_dev;     	// Global variable for the char device structure
 static struct class *cl;     	// Global variable for the device class
@@ -31,24 +34,34 @@ static dev_t midispo;		// Global variable for the device number
 module_param(minor, int, S_IRUGO);
 
 
-/* 
+/*
  * Called when a process tries to open the device file, like
  * "open /dev/intspkr"
  */
-static int device_open(struct inode *inode, struct file *file)
-{
-	/*
-	 * USE LOCKS FOR SHARED VARIABLE ???
-	 */
-	if (Device_Open)
-		return -EBUSY;
 
-	Device_Open++;
+static int device_open(struct inode *inode, struct file *filp)
+{
+	/******************************************************************
+	 * CHECK IF WRITE OR READ -> IF WRITE, ALLOW ONLY ONE OPEN (MUTEX)
+	 *****************************************************************/
+	
+	if (filp->f_mode & FMODE_READ){
+		printk("DEVICE OPEN - READ MODE\n");
+	}else if (filp->f_mode & FMODE_WRITE){
+		printk("DEVICE OPEN - WRITE MODE - ");
+
+		mutex_lock(&ow_mutex);
+		local_open = Device_Open_W++;
+		mutex_unlock(&ow_mutex);
+
+		if (local_open){
+			printk("BUSY\n");
+			return -EBUSY;
+		}
+		printk("COUNT: %d\n", local_open+1);
+	}
 
 	try_module_get(THIS_MODULE);
-	
-	printk(KERN_ALERT "DEVICE OPEN\n");
-
 	return SUCCESS;
 }
 
@@ -58,7 +71,13 @@ static int device_open(struct inode *inode, struct file *file)
  */
 static int device_release(struct inode *inode, struct file *file)
 {
-	Device_Open--;		/* We're now ready for our next caller */
+	/* Free /dev/intspkr for opening in write mode */
+	if (file->f_mode & FMODE_WRITE){
+		mutex_lock(&ow_mutex);
+		Device_Open_W--;
+		mutex_unlock(&ow_mutex);
+	}
+			
 
 	/* 
 	 * Decrement the usage count, or else once you opened the file, you'll
@@ -95,6 +114,15 @@ static const struct file_operations fops = {
 
 static int init_intspkr(void)
 {    
+
+	/*******************************************
+	 * Inicializar Mutex para OPEN en modo WRITE
+	 *******************************************/
+	mutex_init(&ow_mutex);
+
+	/****************************************************
+	 * Inicializar estructuras de datos para demonio udev
+	 ****************************************************/
 	// Reservar major y minor
 	if(alloc_chrdev_region( &midispo, minor, 1, DEVICE_NAME ) < 0 ){
 		printk( KERN_ALERT "Device Registration failed\n" );
@@ -115,9 +143,9 @@ static int init_intspkr(void)
 
 	printk(KERN_ALERT "INTSPKR - INIT - cdev_add()\n");
 
-	/*
+	/***********************************************************
 	 * Alta de un dispositivo para su uso desde las aplicaciones 
-	 */
+	 ***********************************************************/
 
 	//creación de una clase en sysfs -> /sys/class/speaker/
 	if ( (cl = class_create( THIS_MODULE, "speaker" ) ) == NULL )
@@ -145,9 +173,14 @@ static int init_intspkr(void)
 
 static void exit_intspkr(void)
 {	
-	/* 
+	/* *******************************************
+	* Destroy mutex 
+	*********************************************/
+	mutex_destroy(&ow_mutex);
+
+	/* *******************************************
 	 * Unregister the device 
-	 */
+	 *********************************************/
 	// Remove character device data structure
 	cdev_del( &c_dev );
 	// Remove device from /sys/class/speaker/intspkr
