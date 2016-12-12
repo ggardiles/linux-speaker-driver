@@ -10,6 +10,8 @@
 #include <linux/ioctl.h>
 #include <asm/uaccess.h>
 #include <linux/mutex.h>
+#include <linux/spinlock.h>
+#include <linux/timer.h>
 
 
 MODULE_LICENSE("Dual BSD/GPL");
@@ -19,13 +21,21 @@ MODULE_VERSION("dev");
 
 #define SUCCESS 0
 #define DEVICE_NAME "intspkr"	/* Dev name as it appears in /proc/devices   */
+#define FIFO_SIZE	32
 
 /**	Global variables	**/
+int i;
+int ii;
+int j;
 
 static int minor = 0;
 static int Device_Open_W = 0;	/* Is device open?  */
 static int local_open = 0;
-struct mutex ow_mutex;
+struct mutex open_mutex;
+spinlock_t my_lock;
+static struct kfifo fifo;
+static struct timer_list timer;
+static wait_queue_head_t cola;
 
 static struct cdev c_dev;     	// Global variable for the char device structure
 static struct class *cl;     	// Global variable for the device class
@@ -33,12 +43,42 @@ static dev_t midispo;		// Global variable for the device number
 
 module_param(minor, int, S_IRUGO);
 
+// callback variables
+unsigned char fifo_buf[4];
+int n;
+
+void spkr_timer_callback( unsigned long data )
+{
+	printk( "spkr_timer_callback called (%ld).\n", jiffies );
+	spin_lock(&my_lock);
+
+	if (kfifo_len(&fifo)<4){
+		spin_unlock(&my_lock);
+		return;
+	}
+
+	n = kfifo_out(&fifo, fifo_buf, 4);
+	printk("fifo_buf: %x ",fifo_buf[0]);
+	printk("%x ",fifo_buf[1]);
+	printk("%x ",fifo_buf[2]);
+	printk("%x\n",fifo_buf[3]);
+	
+
+
+	//despertar escritores
+	wake_up_interruptible(&cola);
+
+	if (kfifo_len(&fifo)>0){
+		add_timer(&timer);
+	}
+	
+	spin_unlock(&my_lock);
+}
 
 /*
  * Called when a process tries to open the device file, like
  * "open /dev/intspkr"
  */
-
 static int device_open(struct inode *inode, struct file *filp)
 {
 	/******************************************************************
@@ -50,9 +90,9 @@ static int device_open(struct inode *inode, struct file *filp)
 	}else if (filp->f_mode & FMODE_WRITE){
 		printk("DEVICE OPEN - WRITE MODE - ");
 
-		mutex_lock(&ow_mutex);
+		mutex_lock(&open_mutex);
 		local_open = Device_Open_W++;
-		mutex_unlock(&ow_mutex);
+		mutex_unlock(&open_mutex);
 
 		if (local_open){
 			printk("BUSY\n");
@@ -73,9 +113,9 @@ static int device_release(struct inode *inode, struct file *file)
 {
 	/* Free /dev/intspkr for opening in write mode */
 	if (file->f_mode & FMODE_WRITE){
-		mutex_lock(&ow_mutex);
+		mutex_lock(&open_mutex);
 		Device_Open_W--;
-		mutex_unlock(&ow_mutex);
+		mutex_unlock(&open_mutex);
 	}
 			
 
@@ -84,7 +124,7 @@ static int device_release(struct inode *inode, struct file *file)
 	 * never get get rid of the module. 
 	 */
 	module_put(THIS_MODULE);
-	printk(KERN_ALERT "DEVICE RELEASE\n");
+	printk(KERN_ALERT "DEVICE RELEASED\n");
 	return 0;
 }
 
@@ -96,7 +136,28 @@ static ssize_t
 device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 {
 	printk(KERN_ALERT "DEVICE WRITE\n");
-	return count;
+	if(count < 0) 
+		return -EINVAL;
+		
+	//Program timer to handle data
+	timer.data = (unsigned long) 0;
+	timer.function = spkr_timer_callback;
+	timer.expires = jiffies + msecs_to_jiffies(100); /* parameter */
+	add_timer(&timer);
+
+	//Loop through all elements in buffer and put them in
+	for(j=0; j<(int)count; j++){
+		//printk("KFIFO_PUT %x\n", buff[j]);
+		spin_lock(&my_lock);
+		kfifo_put(&fifo, (char)buff[j]);
+		spin_unlock(&my_lock);
+
+		if(wait_event_interruptible(cola,kfifo_avail(&fifo)>0)){
+			return -ERESTARTSYS;
+		}
+	}
+	
+	return j;
 }
 
 /*  
@@ -116,9 +177,26 @@ static int init_intspkr(void)
 {    
 
 	/*******************************************
-	 * Inicializar Mutex para OPEN en modo WRITE
+	 * Inicializar Mutex, spinlock, FIFO y TIMER
 	 *******************************************/
-	mutex_init(&ow_mutex);
+	//mutex
+	mutex_init(&open_mutex);
+
+	//spinlock
+	spin_lock_init(&my_lock);
+
+	//timer
+	init_timer(&timer);
+
+	//kfifo
+	if (kfifo_alloc(&fifo, FIFO_SIZE, GFP_KERNEL)) {
+		printk(KERN_WARNING "error kfifo_alloc\n");
+		return -ENOMEM;
+	}
+	printk(KERN_INFO "KFIFO queue size: %u\n", kfifo_size(&fifo));
+
+	//Kfifo waitqueue
+	init_waitqueue_head(&cola);
 
 	/****************************************************
 	 * Inicializar estructuras de datos para demonio udev
@@ -176,7 +254,17 @@ static void exit_intspkr(void)
 	/* *******************************************
 	* Destroy mutex 
 	*********************************************/
-	mutex_destroy(&ow_mutex);
+	mutex_destroy(&open_mutex);
+
+	/* *******************************************
+	* Destroy FIFO 
+	*********************************************/
+	kfifo_free(&fifo);
+
+	/* *******************************************
+	* Destroy Timer 
+	*********************************************/
+	del_timer_sync(&timer);
 
 	/* *******************************************
 	 * Unregister the device 
