@@ -57,6 +57,7 @@ int n;
 
 void add_timer_if_not_set(unsigned long d);
 void spkr_timer_callback( unsigned long data );
+int is_memory_accessible(const char *buff, size_t count);
 
 void spkr_timer_callback( unsigned long data )
 {
@@ -75,7 +76,7 @@ void spkr_timer_callback( unsigned long data )
 	freq = (fifo_buf[1]<<8)+fifo_buf[0];
 	ms = (fifo_buf[3]<<8)+fifo_buf[2];
 	
-	printk("frequency: %lu,   ms: %lu\n", freq, ms);
+	printk("frequency: %lu\tms: %lu\n", freq, ms);
 	//printk("fifo_buf (frequency): %02X%02X\n",fifo_buf[1],fifo_buf[0]);
 	//printk("fifo_buf (ms): %02X%02X\n",fifo_buf[3],fifo_buf[2]);
 
@@ -87,7 +88,7 @@ void spkr_timer_callback( unsigned long data )
 		spkr_off();
 	}
 	
-	printk("elements_to_write: %d\nkfifo_avail()= %d\n", elements_to_write,kfifo_avail(&fifo));
+	printk("elements_to_write: %d\tkfifo_avail()= %d\n", elements_to_write,kfifo_avail(&fifo));
 	//despertar escritor si hay huevo
 
 	if (elements_to_write){
@@ -126,12 +127,24 @@ void add_timer_if_not_set(unsigned long msecs){
 	timer.data = (unsigned long) 0;
 	timer.function = spkr_timer_callback;
 	timer.expires = jiffies + msecs_to_jiffies(msecs); /* parameter */
-	printk("timer expires in %lu ms at %lu\n", msecs, timer.expires);
+	//printk("timer expires in %lu ms at %lu\n", msecs, timer.expires);
 	add_timer(&timer);
 	//printk("timer has been set\n");
 
 }
 
+int is_memory_accessible(const char *buff, size_t count){
+	const char *buff_ch;
+	/*if(access_ok(VERIFY_READ, buff, count) != 0){
+		printk("access to memory NOT OK: %x\n", access_ok(VERIFY_READ, buff, count));
+		return 0;
+	}*/
+	if (get_user(buff_ch, buff) != 0){
+		printk("access to memory NOT OK");
+		return 0;	
+	}
+	return 1;
+}
 
 /*
  * Called when a process tries to open the device file, like
@@ -194,11 +207,15 @@ static ssize_t
 device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 {
 	//mutex_lock(&write_mutex);
-	printk(KERN_ALERT "DEVICE WRITE START\n");
+	printk(KERN_ALERT "DEVICE WRITE START count=%d\n",(int) count);
 	if(count < 0){
 		mutex_unlock(&write_mutex);
 		return -EINVAL;
 	} 
+
+	if(is_memory_accessible(buff, count) == 0){
+		return -EFAULT;
+	}
 		
 	spin_lock(&my_lock);
 	elements_to_write = count;
