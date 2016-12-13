@@ -3,13 +3,24 @@
 #include <linux/version.h>
 #include <linux/i8253.h>
 
+//static int is_speaker_on = 0;
 void set_spkr_frequency(unsigned int frequency) {
-	printk(KERN_INFO "spkr set frequency: %d\n", frequency);
+	printk(KERN_INFO "SPKR set frequency: %d\n", frequency);	
 }
 
 void spkr_on(void) {
-	printk(KERN_INFO "spkr ON\n");
+	/*if (is_speaker_on){
+		printk(KERN_INFO "spkr ALREADY ON\n");
+		return;
+	}
+	is_speaker_on = 1;*/
+	printk(KERN_INFO "SPKR ON\n");
 }
 void spkr_off(void) {
-	printk(KERN_INFO "spkr OFF\n");
+	/*if (!is_speaker_on){
+		printk(KERN_INFO "spkr ALREADY OFF\n");
+		return;		
+	}
+	is_speaker_on = 0;*/
+	printk(KERN_INFO "SPKR OFF\n");
 }

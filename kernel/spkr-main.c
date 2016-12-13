@@ -13,6 +13,7 @@
 #include <linux/spinlock.h>
 #include <linux/timer.h>
 #include <linux/jiffies.h>
+#include "./spkr-io.h"
 
 
 MODULE_LICENSE("Dual BSD/GPL");
@@ -22,17 +23,20 @@ MODULE_VERSION("dev");
 
 #define SUCCESS 0
 #define DEVICE_NAME "intspkr"	/* Dev name as it appears in /proc/devices   */
-#define FIFO_SIZE	32
 
 /**	Global variables	**/
 int i;
 int ii;
 int j;
+int x = 2;
 
 static int minor = 0;
+static unsigned int buffer_size = PAGE_SIZE;
+static unsigned int buffer_threshold = PAGE_SIZE;
+static int elements_to_write = 0;
 static int Device_Open_W = 0;	/* Is device open?  */
 static int local_open = 0;
-struct mutex open_mutex;
+struct mutex open_mutex, write_mutex;
 spinlock_t my_lock;
 static struct kfifo fifo;
 static struct timer_list timer;
@@ -43,55 +47,88 @@ static struct class *cl;     	// Global variable for the device class
 static dev_t midispo;		// Global variable for the device number
 
 module_param(minor, int, S_IRUGO);
+module_param(buffer_size, uint, S_IRUGO);
+module_param(buffer_threshold, uint, S_IRUGO);
 
 // callback variables
 unsigned char fifo_buf[4];
+unsigned long freq, ms;
 int n;
+
 void add_timer_if_not_set(unsigned long d);
 void spkr_timer_callback( unsigned long data );
 
 void spkr_timer_callback( unsigned long data )
 {
-	printk( "spkr_timer_callback called (%ld).\n", jiffies );
+	//printk("spkr_timer_callback called (%ld).\n", jiffies );
 	spin_lock(&my_lock);
 
 	// Skip function if there are less than 4 elements in FIFO
 	if (kfifo_len(&fifo)<4){
+		printk("menos de 4 elementos en fifo speaker off\n");
+		spkr_off();
 		spin_unlock(&my_lock);
 		return;
 	}
 
 	n = kfifo_out(&fifo, fifo_buf, 4);
-	printk("fifo_buf: %x ",fifo_buf[0]);
-	printk("%x ",fifo_buf[1]);
-	printk("%x ",fifo_buf[2]);
-	printk("%x\n",fifo_buf[3]);
+	freq = (fifo_buf[1]<<8)+fifo_buf[0];
+	ms = (fifo_buf[3]<<8)+fifo_buf[2];
 	
+	printk("frequency: %lu,   ms: %lu\n", freq, ms);
+	//printk("fifo_buf (frequency): %02X%02X\n",fifo_buf[1],fifo_buf[0]);
+	//printk("fifo_buf (ms): %02X%02X\n",fifo_buf[3],fifo_buf[2]);
 
+	if ((freq>0) && (ms > 0)){
+		set_spkr_frequency(freq);
+		spkr_on();
+	}else{ //pausa o silencio
+		printk("pausa\n");
+		spkr_off();
+	}
+	
+	printk("elements_to_write: %d\nkfifo_avail()= %d\n", elements_to_write,kfifo_avail(&fifo));
+	//despertar escritor si hay huevo
 
-	//despertar escritores
-	wake_up_interruptible(&cola);
+	if (elements_to_write){
+		printk("elements_to_write > 0");
+		if 	(kfifo_avail(&fifo) >= buffer_threshold
+		 || kfifo_avail(&fifo) >= elements_to_write
+		 || kfifo_is_empty(&fifo)){
 
-	add_timer_if_not_set(0);
+			printk(KERN_ALERT"wake_up_interruptible START");
+			wake_up_interruptible(&cola);
+			printk(KERN_ALERT"wake_up_interruptible END");
+		}
+	}
+	
+	
+	//reprogramar sonido si hay mas de 3, sino apagar speaker
+	if (kfifo_len(&fifo)>3){
+		add_timer_if_not_set(ms);
+	}else{ // no quedan elementos pendientes en kfifo y apagar el speaker
+		printk("no quedan sonidos\n");
+		spkr_off();
+	}
 	
 	spin_unlock(&my_lock);
 }
 
 //Call inside of spinlock
-void add_timer_if_not_set(unsigned long d){
+void add_timer_if_not_set(unsigned long msecs){
 	if (timer_pending(&timer)){
 		printk("timer pending\n");
 		return;
 	}
 
-	printk("timer will be set\n");
+	//printk("timer will be set\n");
 	//Program timer to handle data
 	timer.data = (unsigned long) 0;
 	timer.function = spkr_timer_callback;
-	timer.expires = jiffies + msecs_to_jiffies(1000); /* parameter */
-	printk("timer expires at %lu\n", timer.expires);
+	timer.expires = jiffies + msecs_to_jiffies(msecs); /* parameter */
+	printk("timer expires in %lu ms at %lu\n", msecs, timer.expires);
 	add_timer(&timer);
-	printk("timer has been set\n");
+	//printk("timer has been set\n");
 
 }
 
@@ -156,34 +193,43 @@ static int device_release(struct inode *inode, struct file *file)
 static ssize_t
 device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 {
-	printk(KERN_ALERT "DEVICE WRITE\n");
-	if(count < 0) 
+	//mutex_lock(&write_mutex);
+	printk(KERN_ALERT "DEVICE WRITE START\n");
+	if(count < 0){
+		mutex_unlock(&write_mutex);
 		return -EINVAL;
+	} 
 		
-
 	spin_lock(&my_lock);
+	elements_to_write = count;
 	//Loop through all elements in buffer and put them in
 	for(j=0; j<(int)count; j++){
-		printk("KFIFO_PUT %x\n", buff[j]);
+		//printk("KFIFO_PUT %x\n", buff[j]);
 		
 		if (kfifo_avail(&fifo)==0){
-
-			add_timer_if_not_set(0);
-
+			printk("write - kfifo lleno\n");
 			spin_unlock(&my_lock);
+
+			add_timer_if_not_set(200);
+
 			if(wait_event_interruptible(cola,kfifo_avail(&fifo)>0)){
+				//mutex_unlock(&write_mutex);
 				return -ERESTARTSYS;
 			}
+			printk("write - kfifo liberado\n");
+			
 			spin_lock(&my_lock);
 		}
 		
 		kfifo_put(&fifo, (char)buff[j]);
+		elements_to_write--;
 	}
 
-	add_timer_if_not_set(0);
+	add_timer_if_not_set(200);
 
 	spin_unlock(&my_lock);
-	
+	//mutex_unlock(&write_mutex);
+	printk(KERN_ALERT "DEVICE END\n");
 	return j;
 }
 
@@ -202,12 +248,30 @@ static const struct file_operations fops = {
 
 static int init_intspkr(void)
 {    
+    // Check if buffer_size is a power of 2
+	if (buffer_size>16384){
+		buffer_size = PAGE_SIZE;
+	}else if(buffer_size & (buffer_size - 1)){ // not a power of 2
+		for (x=2;x<16384;x=x*2){
+			if (x>=buffer_size){
+				buffer_size = x;
+				break;
+			}
+		}
+	}
+
+	if (buffer_threshold > buffer_size){
+		buffer_threshold = buffer_size;
+	}
+
+	printk("buffer_size: %d, buffer_threshold: %d\n",buffer_size,buffer_threshold);
 
 	/*******************************************
 	 * Inicializar Mutex, spinlock, FIFO y TIMER
 	 *******************************************/
 	//mutex
 	mutex_init(&open_mutex);
+	mutex_init(&write_mutex);
 
 	//spinlock
 	spin_lock_init(&my_lock);
@@ -216,7 +280,7 @@ static int init_intspkr(void)
 	init_timer(&timer);
 
 	//kfifo
-	if (kfifo_alloc(&fifo, FIFO_SIZE, GFP_KERNEL)) {
+	if (kfifo_alloc(&fifo, buffer_size, GFP_KERNEL)) {
 		printk(KERN_WARNING "error kfifo_alloc\n");
 		return -ENOMEM;
 	}
@@ -278,6 +342,12 @@ static int init_intspkr(void)
 
 static void exit_intspkr(void)
 {	
+	/* *******************************************
+	* Silence speaker 
+	*********************************************/
+	printk("salir speaker off\n");
+	spkr_off();
+
 	/* *******************************************
 	* Destroy mutex 
 	*********************************************/
