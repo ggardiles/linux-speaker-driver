@@ -69,6 +69,10 @@ void spkr_timer_callback( unsigned long data )
 	wake_up_interruptible(&cola);
 
 	if (kfifo_len(&fifo)>0){
+		//Program timer to handle data
+		timer.data = (unsigned long) 0;
+		timer.function = spkr_timer_callback;
+		timer.expires = jiffies + msecs_to_jiffies(1000); /* parameter */
 		add_timer(&timer);
 	}
 	
@@ -84,11 +88,11 @@ static int device_open(struct inode *inode, struct file *filp)
 	/******************************************************************
 	 * CHECK IF WRITE OR READ -> IF WRITE, ALLOW ONLY ONE OPEN (MUTEX)
 	 *****************************************************************/
-	
+	printk("DEVICE OPEN - ");
 	if (filp->f_mode & FMODE_READ){
-		printk("DEVICE OPEN - READ MODE\n");
+		printk("READ MODE\n");
 	}else if (filp->f_mode & FMODE_WRITE){
-		printk("DEVICE OPEN - WRITE MODE - ");
+		printk("WRITE MODE - ");
 
 		mutex_lock(&open_mutex);
 		local_open = Device_Open_W++;
@@ -139,23 +143,38 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 	if(count < 0) 
 		return -EINVAL;
 		
-	//Program timer to handle data
-	timer.data = (unsigned long) 0;
-	timer.function = spkr_timer_callback;
-	timer.expires = jiffies + msecs_to_jiffies(100); /* parameter */
-	add_timer(&timer);
 
+	spin_lock(&my_lock);
 	//Loop through all elements in buffer and put them in
 	for(j=0; j<(int)count; j++){
 		//printk("KFIFO_PUT %x\n", buff[j]);
-		spin_lock(&my_lock);
-		kfifo_put(&fifo, (char)buff[j]);
-		spin_unlock(&my_lock);
+		
+		if (kfifo_avail(&fifo)==0){
+			//Program timer to handle data
+			timer.data = (unsigned long) 0;
+			timer.function = spkr_timer_callback;
+			timer.expires = jiffies + msecs_to_jiffies(1000); /* parameter */
+			add_timer(&timer);
 
-		if(wait_event_interruptible(cola,kfifo_avail(&fifo)>0)){
-			return -ERESTARTSYS;
+			spin_unlock(&my_lock);
+			if(wait_event_interruptible(cola,kfifo_avail(&fifo)>0)){
+				return -ERESTARTSYS;
+			}
+			spin_lock(&my_lock);
 		}
+		
+		kfifo_put(&fifo, (char)buff[j]);
 	}
+
+	if (kfifo_len(&fifo)>3){
+		//Program timer to handle data
+		timer.data = (unsigned long) 0;
+		timer.function = spkr_timer_callback;
+		timer.expires = jiffies + msecs_to_jiffies(1000); /* parameter */
+		add_timer(&timer);
+	}
+
+	spin_unlock(&my_lock);
 	
 	return j;
 }
