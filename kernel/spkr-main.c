@@ -12,6 +12,7 @@
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/timer.h>
+#include <linux/jiffies.h>
 
 
 MODULE_LICENSE("Dual BSD/GPL");
@@ -46,12 +47,15 @@ module_param(minor, int, S_IRUGO);
 // callback variables
 unsigned char fifo_buf[4];
 int n;
+void add_timer_if_not_set(unsigned long d);
+void spkr_timer_callback( unsigned long data );
 
 void spkr_timer_callback( unsigned long data )
 {
 	printk( "spkr_timer_callback called (%ld).\n", jiffies );
 	spin_lock(&my_lock);
 
+	// Skip function if there are less than 4 elements in FIFO
 	if (kfifo_len(&fifo)<4){
 		spin_unlock(&my_lock);
 		return;
@@ -68,16 +72,29 @@ void spkr_timer_callback( unsigned long data )
 	//despertar escritores
 	wake_up_interruptible(&cola);
 
-	if (kfifo_len(&fifo)>0){
-		//Program timer to handle data
-		timer.data = (unsigned long) 0;
-		timer.function = spkr_timer_callback;
-		timer.expires = jiffies + msecs_to_jiffies(1000); /* parameter */
-		add_timer(&timer);
-	}
+	add_timer_if_not_set(0);
 	
 	spin_unlock(&my_lock);
 }
+
+//Call inside of spinlock
+void add_timer_if_not_set(unsigned long d){
+	if (timer_pending(&timer)){
+		printk("timer pending\n");
+		return;
+	}
+
+	printk("timer will be set\n");
+	//Program timer to handle data
+	timer.data = (unsigned long) 0;
+	timer.function = spkr_timer_callback;
+	timer.expires = jiffies + msecs_to_jiffies(1000); /* parameter */
+	printk("timer expires at %lu\n", timer.expires);
+	add_timer(&timer);
+	printk("timer has been set\n");
+
+}
+
 
 /*
  * Called when a process tries to open the device file, like
@@ -147,14 +164,11 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 	spin_lock(&my_lock);
 	//Loop through all elements in buffer and put them in
 	for(j=0; j<(int)count; j++){
-		//printk("KFIFO_PUT %x\n", buff[j]);
+		printk("KFIFO_PUT %x\n", buff[j]);
 		
 		if (kfifo_avail(&fifo)==0){
-			//Program timer to handle data
-			timer.data = (unsigned long) 0;
-			timer.function = spkr_timer_callback;
-			timer.expires = jiffies + msecs_to_jiffies(1000); /* parameter */
-			add_timer(&timer);
+
+			add_timer_if_not_set(0);
 
 			spin_unlock(&my_lock);
 			if(wait_event_interruptible(cola,kfifo_avail(&fifo)>0)){
@@ -166,13 +180,7 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 		kfifo_put(&fifo, (char)buff[j]);
 	}
 
-	if (kfifo_len(&fifo)>3){
-		//Program timer to handle data
-		timer.data = (unsigned long) 0;
-		timer.function = spkr_timer_callback;
-		timer.expires = jiffies + msecs_to_jiffies(1000); /* parameter */
-		add_timer(&timer);
-	}
+	add_timer_if_not_set(0);
 
 	spin_unlock(&my_lock);
 	
