@@ -97,9 +97,9 @@ void spkr_timer_callback( unsigned long data )
 		 || kfifo_avail(&fifo) >= elements_to_write
 		 || kfifo_is_empty(&fifo)){
 
-			printk(KERN_ALERT"wake_up_interruptible START");
+			//printk(KERN_ALERT"wake_up_interruptible START");
 			wake_up_interruptible(&cola);
-			printk(KERN_ALERT"wake_up_interruptible END");
+			//printk(KERN_ALERT"wake_up_interruptible END");
 		}
 	}
 	
@@ -233,7 +233,7 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 				//mutex_unlock(&write_mutex);
 				return -ERESTARTSYS;
 			}
-			printk("write - kfifo liberado\n");
+			printk(KERN_ALERT "WAITQUEUE - kfifo liberado\n");
 			
 			spin_lock(&my_lock);
 		}
