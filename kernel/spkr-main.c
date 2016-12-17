@@ -36,11 +36,11 @@ static unsigned int buffer_threshold = PAGE_SIZE;
 static int elements_to_write = 0;
 static int Device_Open_W = 0;	/* Is device open?  */
 static int local_open = 0;
-struct mutex open_mutex, write_mutex;
-spinlock_t my_lock;
+struct mutex open_mutex;
+spinlock_t fifo_lock, fsync_lock;
 static struct kfifo fifo;
 static struct timer_list timer;
-static wait_queue_head_t cola;
+static wait_queue_head_t cola, fsync_cola;
 
 static struct cdev c_dev;     	// Global variable for the char device structure
 static struct class *cl;     	// Global variable for the device class
@@ -61,14 +61,13 @@ int is_memory_accessible(const char *buff, size_t count);
 
 void spkr_timer_callback( unsigned long data )
 {
-	//printk("spkr_timer_callback called (%ld).\n", jiffies );
-	spin_lock(&my_lock);
+	spin_lock_bh(&fifo_lock);
 
 	// Skip function if there are less than 4 elements in FIFO
 	if (kfifo_len(&fifo)<4){
 		printk("menos de 4 elementos en fifo speaker off\n");
 		spkr_off();
-		spin_unlock(&my_lock);
+		spin_unlock_bh(&fifo_lock);
 		return;
 	}
 
@@ -76,43 +75,41 @@ void spkr_timer_callback( unsigned long data )
 	freq = (fifo_buf[1]<<8)+fifo_buf[0];
 	ms = (fifo_buf[3]<<8)+fifo_buf[2];
 	
-	printk("frequency: %lu\tms: %lu\n", freq, ms);
+	printk("frequency: %lu \tms: %lu\n", freq, ms);
 	//printk("fifo_buf (frequency): %02X%02X\n",fifo_buf[1],fifo_buf[0]);
 	//printk("fifo_buf (ms): %02X%02X\n",fifo_buf[3],fifo_buf[2]);
-
+	
+	
 	if ((freq>0) && (ms > 0)){
-		set_spkr_frequency(freq);
-		spkr_on();
+		spkr_play(freq);
 	}else{ //pausa o silencio
 		printk("pausa\n");
 		spkr_off();
 	}
-	
+
 	printk("elements_to_write: %d\tkfifo_avail()= %d\n", elements_to_write,kfifo_avail(&fifo));
 	//despertar escritor si hay huevo
 
-	if (elements_to_write){
+	if (elements_to_write > 0){
 		printk("elements_to_write > 0");
 		if 	(kfifo_avail(&fifo) >= buffer_threshold
-		 || kfifo_avail(&fifo) >= elements_to_write
-		 || kfifo_is_empty(&fifo)){
+		  || kfifo_avail(&fifo) >= elements_to_write
+		  || kfifo_is_empty(&fifo)){
 
-			//printk(KERN_ALERT"wake_up_interruptible START");
 			wake_up_interruptible(&cola);
-			//printk(KERN_ALERT"wake_up_interruptible END");
 		}
 	}
 	
-	
-	//reprogramar sonido si hay mas de 3, sino apagar speaker
+	//reprogramar sonido si hay mas de 3 en la cola, sino apagar speaker
 	if (kfifo_len(&fifo)>3){
 		add_timer_if_not_set(ms);
+		spin_unlock_bh(&fifo_lock);
 	}else{ // no quedan elementos pendientes en kfifo y apagar el speaker
 		printk("no quedan sonidos\n");
+		spin_unlock_bh(&fifo_lock);
+		wake_up_interruptible(&fsync_cola);
 		spkr_off();
 	}
-	
-	spin_unlock(&my_lock);
 }
 
 //Call inside of spinlock
@@ -122,14 +119,11 @@ void add_timer_if_not_set(unsigned long msecs){
 		return;
 	}
 
-	//printk("timer will be set\n");
 	//Program timer to handle data
 	timer.data = (unsigned long) 0;
 	timer.function = spkr_timer_callback;
 	timer.expires = jiffies + msecs_to_jiffies(msecs); /* parameter */
-	//printk("timer expires in %lu ms at %lu\n", msecs, timer.expires);
 	add_timer(&timer);
-	//printk("timer has been set\n");
 
 }
 
@@ -206,36 +200,37 @@ static int device_release(struct inode *inode, struct file *file)
 static ssize_t
 device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 {
-	//mutex_lock(&write_mutex);
 	printk(KERN_ALERT "DEVICE WRITE START count=%d\n",(int) count);
+	
+	spin_lock_bh(&fsync_lock);
 	if(count < 0){
-		mutex_unlock(&write_mutex);
 		return -EINVAL;
 	} 
+	spin_unlock_bh(&fsync_lock);
 
 	if(is_memory_accessible(buff, count) == 0){
 		return -EFAULT;
 	}
 		
-	spin_lock(&my_lock);
+	spin_lock_bh(&fifo_lock);
 	elements_to_write = count;
-	//Loop through all elements in buffer and put them in
+
+	//Loop through all elements in buffer and put them in kfifo
 	for(j=0; j<(int)count; j++){
 		//printk("KFIFO_PUT %x\n", buff[j]);
 		
 		if (kfifo_avail(&fifo)==0){
 			printk("write - kfifo lleno\n");
-			spin_unlock(&my_lock);
-
+			spin_unlock_bh(&fifo_lock);
+			
 			add_timer_if_not_set(200);
 
-			if(wait_event_interruptible(cola,kfifo_avail(&fifo)>0)){
-				//mutex_unlock(&write_mutex);
+			if(wait_event_interruptible(cola, kfifo_avail(&fifo)>0)){
 				return -ERESTARTSYS;
 			}
 			printk(KERN_ALERT "WAITQUEUE - kfifo liberado\n");
 			
-			spin_lock(&my_lock);
+			spin_lock_bh(&fifo_lock);
 		}
 		
 		kfifo_put(&fifo, (char)buff[j]);
@@ -244,12 +239,22 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 
 	add_timer_if_not_set(200);
 
-	spin_unlock(&my_lock);
-	//mutex_unlock(&write_mutex);
+	spin_unlock_bh(&fifo_lock);
+
 	printk(KERN_ALERT "DEVICE END\n");
 	return j;
 }
 
+
+static int device_fsync(struct file *filp, loff_t start, loff_t end, int datasync) {
+	printk("LLamada a FSYNC\n");
+	spin_lock_bh(&fsync_lock);
+	if(wait_event_interruptible(fsync_cola, kfifo_is_empty(&fifo) == 1)){
+		return -ERESTARTSYS;
+	}
+	spin_unlock_bh(&fsync_lock);
+	return SUCCESS;
+}
 /*  
  * Contrato (Interface) que define la funcionalidad 
  * que implementa este device driver
@@ -259,6 +264,7 @@ static const struct file_operations fops = {
 	.write		= device_write,
 	.open		= device_open,
 	.release	= device_release,
+	.fsync		= device_fsync
 };
 
 
@@ -288,10 +294,10 @@ static int init_intspkr(void)
 	 *******************************************/
 	//mutex
 	mutex_init(&open_mutex);
-	mutex_init(&write_mutex);
 
 	//spinlock
-	spin_lock_init(&my_lock);
+	spin_lock_init(&fifo_lock);
+	spin_lock_init(&fsync_lock);
 
 	//timer
 	init_timer(&timer);
@@ -303,8 +309,9 @@ static int init_intspkr(void)
 	}
 	printk(KERN_INFO "KFIFO queue size: %u\n", kfifo_size(&fifo));
 
-	//Kfifo waitqueue
+	//Init waitqueues
 	init_waitqueue_head(&cola);
+	init_waitqueue_head(&fsync_cola);
 
 	/****************************************************
 	 * Inicializar estructuras de datos para demonio udev

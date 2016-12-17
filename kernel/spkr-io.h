@@ -5,5 +5,6 @@
 
 //static int is_speaker_on = 0;
 void set_spkr_frequency(unsigned int frequency);
+void spkr_play(unsigned int frequency);
 void spkr_on(void);
 void spkr_off(void);
