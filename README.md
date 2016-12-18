@@ -10,7 +10,9 @@ Gestión del hardware del dispositivo
 
 *Status:*
 
-- [ ] TODO ALL
+- [x] acceso al hardware con outb, inb
+- [x] uso de raw spinlock de linux/i8253.h
+- [x] desarrollo funcion play (frequency+spkr_on
 
 ## Step 2
 
@@ -18,9 +20,9 @@ Alta y baja del dispositivo
 
 *Status:* TERMINADO
 
-- [✓] Skeleton functions for file_operations: open, write and release 
-- [✓] ON INIT: Automatic creation of /sys/class/speaker/intspkr and /dev/intspkr to access the driver
-- [✓] ON EXIT: Remove user accesible files
+- [x] Skeleton functions for file_operations: open, write and release 
+- [x] ON INIT: Automatic creation of /sys/class/speaker/intspkr and /dev/intspkr to access the driver
+- [x] ON EXIT: Remove user accesible files
 
 ## Step 3
 
@@ -28,8 +30,8 @@ Operaciones de apertura y cierre
 
 *Status:* TERMINADO
 
-- [✓ ] Write mode: Only allow 1 file open, else: EBUSY (he usado Mutex)
-- [✓ ] Read mode: Allow infinite opens
+- [x ] Write mode: Only allow 1 file open, else: EBUSY (he usado Mutex)
+- [x ] Read mode: Allow infinite opens
 
 ## Step 4
 
@@ -37,15 +39,16 @@ Operación de escritura
 
 *Status:*
 
-- [ ] TODO ALL
+- [x] TODO ALL
 
 ## Step 5
 
-Operación fsync y adapaptación a la versión 3.0 de Linux
+Operación fsync y adapaptación a la versión 3.0.X de Linux
 
 *Status:*
 
-- [ ] TODO ALL
+- [x] fsync spinlock
+- [ ] verificar que el spinlock de spkr-io para linux 3.0.X no necesita inicializarse (cuando no hay fichero linux/i8253.h
 
 ## Step 6
 
@@ -53,10 +56,13 @@ Operaciones ioctl
 
 *Status:*
 
-- [ ] TODO ALL
+- [] SET_MUTE
+- [x] GET_MUTE
+- [] RESET
 
 ## OTHER
 
 - [ ] PDF memoria
+- [ ] Verificar que los spinlocks y mutex estan bien puestos en la teoría (_bh en callback, spinlock_bh en fsync, raw_spinlock_irqsave en spkr, mutex para open, mutex para ioctl
 - [ ] Seccion en pdf respecto a la concurrencia
 
