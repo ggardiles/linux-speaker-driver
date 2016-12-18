@@ -8,7 +8,7 @@ Cuando se comience a trabajar en una fase determinada se leeran los distintos pu
 
 Gestión del hardware del dispositivo
 
-*Status:*
+*Status:* TERMINADO
 
 - [x] acceso al hardware con outb, inb
 - [x] uso de raw spinlock de linux/i8253.h
@@ -45,7 +45,7 @@ Operación de escritura
 
 Operación fsync y adapaptación a la versión 3.0.X de Linux
 
-*Status:*
+*Status:* FUNCIONAL (verificar punto por si diera fallo)
 
 - [x] fsync spinlock
 - [ ] verificar que el spinlock de spkr-io para linux 3.0.X no necesita inicializarse (cuando no hay fichero linux/i8253.h
