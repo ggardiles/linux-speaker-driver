@@ -245,8 +245,14 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 	return j;
 }
 
-
-static int device_fsync(struct file *filp, loff_t start, loff_t end, int datasync) {
+#if (LINUX_VERSION_CODE & 0xFFFF00) == KERNEL_VERSION(3,0,0)
+#pragma message("LINUX VERSION 3.0.X")
+static int device_fsync(struct file *filp, int datasync)
+#else
+#pragma message("LINUX VERSION > 3.0.X")
+static int device_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
+#endif  
+{	
 	printk("LLamada a FSYNC\n");
 	spin_lock_bh(&fsync_lock);
 	if(wait_event_interruptible(fsync_cola, kfifo_is_empty(&fifo) == 1)){
@@ -255,16 +261,23 @@ static int device_fsync(struct file *filp, loff_t start, loff_t end, int datasyn
 	spin_unlock_bh(&fsync_lock);
 	return SUCCESS;
 }
+
+
+static long device_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) 
+{
+
+}
 /*  
  * Contrato (Interface) que define la funcionalidad 
  * que implementa este device driver
  */
 static const struct file_operations fops = {
-	.owner		= THIS_MODULE,
-	.write		= device_write,
-	.open		= device_open,
-	.release	= device_release,
-	.fsync		= device_fsync
+	.owner			= THIS_MODULE,
+	.write			= device_write,
+	.open			= device_open,
+	.release		= device_release,
+	.fsync			= device_fsync,
+	.unlocked_ioctl = device_ioctl
 };
 
 

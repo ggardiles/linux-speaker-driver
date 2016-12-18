@@ -1,8 +1,14 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/version.h>
-#include <linux/i8253.h>
 #include <asm/io.h>
+
+#if (LINUX_VERSION_CODE & 0xFFFF00) == KERNEL_VERSION(3,0,0)
+#pragma message("LINUX VERSION 3.0.X")
+extern raw_spinlock_t i8253_lock;
+#else
+#include <linux/i8253.h>
+#endif  	
 
 //static int is_speaker_on = 0;
 void set_spkr_frequency(unsigned int frequency) {
