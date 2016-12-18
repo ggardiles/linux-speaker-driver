@@ -37,9 +37,9 @@ Operaciones de apertura y cierre
 
 Operación de escritura
 
-*Status:*
+*Status:* TERMINADO
 
-- [x] TODO ALL
+- [x] Muchas cosas que hacer, hechas
 
 ## Step 5
 
