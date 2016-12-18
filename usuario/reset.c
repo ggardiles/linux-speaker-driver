@@ -5,6 +5,13 @@
 #include <sys/ioctl.h>
 
 
+//IOCTL constants
+#define MAGIC_NO '9'
+#define SPKR_RESET _IO(MAGIC_NO, 3)
+#define SPKR_SET_MUTE_STATE _IOR(MAGIC_NO, 1, int *) 
+#define SPKR_GET_MUTE_STATE _IOR(MAGIC_NO, 2, int *) 
+
+
 int main(int argc, char *argv[]) {
 	int sd;
 

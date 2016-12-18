@@ -38,3 +38,8 @@
 *o.cmd
 .tmp_versions
 .Rhistory
+
+usuario/comando
+usuario/getmute
+usuario/setmute
+

@@ -24,9 +24,14 @@ MODULE_VERSION("dev");
 #define SUCCESS 0
 #define DEVICE_NAME "intspkr"	/* Dev name as it appears in /proc/devices   */
 
+//IOCTL constants
+#define MAGIC_NO '9'
+#define SPKR_SET_MUTE_STATE _IOR(MAGIC_NO, 1, int *) 
+#define SPKR_GET_MUTE_STATE _IOR(MAGIC_NO, 2, int *) 
+#define SPKR_RESET 			 _IO(MAGIC_NO, 3) 
+volatile int is_mute[1];
+
 /**	Global variables	**/
-int i;
-int ii;
 int j;
 int x = 2;
 
@@ -36,7 +41,7 @@ static unsigned int buffer_threshold = PAGE_SIZE;
 static int elements_to_write = 0;
 static int Device_Open_W = 0;	/* Is device open?  */
 static int local_open = 0;
-struct mutex open_mutex;
+struct mutex open_mutex, ioctl_mutex;
 spinlock_t fifo_lock, fsync_lock;
 static struct kfifo fifo;
 static struct timer_list timer;
@@ -79,8 +84,9 @@ void spkr_timer_callback( unsigned long data )
 	//printk("fifo_buf (frequency): %02X%02X\n",fifo_buf[1],fifo_buf[0]);
 	//printk("fifo_buf (ms): %02X%02X\n",fifo_buf[3],fifo_buf[2]);
 	
-	
-	if ((freq>0) && (ms > 0)){
+	if (is_mute){
+		printk("MUTED\n");
+	}else if ((freq>0) && (ms > 0)){
 		spkr_play(freq);
 	}else{ //pausa o silencio
 		printk("pausa\n");
@@ -113,7 +119,8 @@ void spkr_timer_callback( unsigned long data )
 }
 
 //Call inside of spinlock
-void add_timer_if_not_set(unsigned long msecs){
+void add_timer_if_not_set(unsigned long msecs)
+{
 	if (timer_pending(&timer)){
 		printk("timer pending\n");
 		return;
@@ -127,7 +134,8 @@ void add_timer_if_not_set(unsigned long msecs){
 
 }
 
-int is_memory_accessible(const char *buff, size_t count){
+int is_memory_accessible(const char *buff, size_t count)
+{
 	const char *buff_ch;
 	/*if(access_ok(VERIFY_READ, buff, count) != 0){
 		printk("access to memory NOT OK: %x\n", access_ok(VERIFY_READ, buff, count));
@@ -265,6 +273,30 @@ static int device_fsync(struct file *filp, loff_t start, loff_t end, int datasyn
 
 static long device_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) 
 {
+	mutex_lock(&ioctl_mutex);
+	switch(cmd){
+		case SPKR_SET_MUTE_STATE:
+			if (copy_from_user(is_mute, (int *) arg, sizeof(int *)))     
+				return -EFAULT;  
+			if (is_mute)
+				spkr_off();
+			
+			printk("SPKR_SET_MUTE_STATE: %d\n", is_mute[0]);
+			break;
+		case SPKR_GET_MUTE_STATE:
+			printk("SPKR_GET_MUTE_STATE\n");
+			if(copy_to_user((int *)arg, is_mute, sizeof(int *)))
+				return -EFAULT;
+			break;
+		case SPKR_RESET:
+			printk("SPKR_RESET\n");
+			break;
+		default:     
+			mutex_unlock(&ioctl_mutex);                                          
+           	return -ENOTTY;
+	}
+	mutex_unlock(&ioctl_mutex);
+	return 0;
 
 }
 /*  
@@ -307,6 +339,7 @@ static int init_intspkr(void)
 	 *******************************************/
 	//mutex
 	mutex_init(&open_mutex);
+	mutex_init(&ioctl_mutex);
 
 	//spinlock
 	spin_lock_init(&fifo_lock);
