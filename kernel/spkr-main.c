@@ -84,6 +84,7 @@ void spkr_timer_callback( unsigned long data )
 		kfifo_reset(&fifo);
 		IS_RESET = 0;
 		spin_unlock_bh(&fiforeset_lock);
+		spkr_off();
 		wake_up_interruptible(&fsync_cola);
 		spin_unlock_bh(&fifo_lock);
 		return;
