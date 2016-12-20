@@ -45,7 +45,7 @@ void spkr_play(unsigned int frequency){
 	outb_p((count >> 8) & 0xff, 0x42);
 	outb(inb_p(0x61) | 3, 0x61);
 
-	printk(KERN_INFO "SPKR ON\n");
+	//printk(KERN_INFO "SPKR ON\n");
 	raw_spin_unlock_irqrestore(&i8253_lock, flags);
 }
 void spkr_on(void) {

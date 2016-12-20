@@ -19,8 +19,8 @@ int main(int argc, char *argv[]) {
 		perror("open");
 		return 1;
 	}
-#ifndef SPRK_RESET
-#error Debe definir el ioctl para la operación reset
+#ifndef SPKR_GET_MUTE_STATE
+#error Debe definir el ioctl para la operación get mute
 #else
 	if (ioctl(sd, SPKR_RESET, 0) <0) {
 		perror("ioctl");

@@ -19,7 +19,7 @@
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Gabriel Garcia <g.gardiles@alumnos.upm.es> and Sergio Vicente <...@alumnos.upm.es");
 MODULE_DESCRIPTION("intspkr module for embedded system");
-MODULE_VERSION("dev");
+MODULE_VERSION("1.0.0");
 
 // GLOBAL CONSTANTS
 #define SUCCESS 0
@@ -35,16 +35,17 @@ MODULE_VERSION("dev");
 static int elements_to_write = 0;	// Store elements to write to FIFO
 static int Device_Open_W = 0;		// Limit ammount of writes to only 1
 int is_mute[1];
+int IS_RESET = 0;
 
 // Syncronization variables
 struct mutex open_mutex, fsync_lock, ioctl_mutex;
-spinlock_t fifo_lock;
+spinlock_t fifo_lock, fiforeset_lock;
 static wait_queue_head_t cola, fsync_cola;
 
 // FIFO 
 static struct kfifo fifo;
 
-// Asyncronous callback
+// Timer for asyncronous function
 static struct timer_list timer;
 
 // Device creation
@@ -56,16 +57,14 @@ static dev_t midispo;			// Global variable for the device number
 static int minor = 0;
 static unsigned int buffer_size = PAGE_SIZE;
 static unsigned int buffer_threshold = PAGE_SIZE;
-
 module_param(minor, int, S_IRUGO);
 module_param(buffer_size, uint, S_IRUGO);
 module_param(buffer_threshold, uint, S_IRUGO);
 
+// helper function declarations
 void add_timer_if_not_set(unsigned long d);
 void spkr_timer_callback( unsigned long data );
 int is_memory_accessible(const char *buff, size_t count);
-
-
 
 /**
 * Asyncronous callback to play sound
@@ -78,7 +77,20 @@ void spkr_timer_callback( unsigned long data )
 
 	spin_lock_bh(&fifo_lock);
 
-	// Skip function if there are less than 4 elements in FIFO
+	// Si RESET by IOCTL -> Reset FIFO
+	spin_lock_bh(&fiforeset_lock);
+	if (IS_RESET){
+		printk(KERN_ALERT"kfifo RESETED\n");
+		kfifo_reset(&fifo);
+		IS_RESET = 0;
+		spin_unlock_bh(&fiforeset_lock);
+		wake_up_interruptible(&fsync_cola);
+		spin_unlock_bh(&fifo_lock);
+		return;
+	}
+	spin_unlock_bh(&fiforeset_lock);
+
+	// Comprobar que hay suficientes elementos en FIFO
 	if (kfifo_len(&fifo)<4){
 		printk("menos de 4 elementos en fifo speaker off\n");
 		spkr_off();
@@ -86,26 +98,28 @@ void spkr_timer_callback( unsigned long data )
 		return;
 	}
 
+	// Leer sonido del FIFO
 	n = kfifo_out(&fifo, fifo_buf, 4);
 	freq = (fifo_buf[1]<<8)+fifo_buf[0];
 	ms = (fifo_buf[3]<<8)+fifo_buf[2];
 	
-	printk("SET Frequency: %lu\tms: %lu\n", freq, ms);
+	//printk("SPKR Frequency: %lu\tms: %lu\n", freq, ms);
 	//printk("fifo_buf (frequency): %02X%02X\n",fifo_buf[1],fifo_buf[0]);
 	//printk("fifo_buf (ms): %02X%02X\n",fifo_buf[3],fifo_buf[2]);
-	
+
+	// Reproducir Sonido
 	if (is_mute[0]){
-		printk("MUTED\n");
+		printk("SPKR MUTE\n");
 	}else if ((freq>0) && (ms > 0)){
+		printk("SPKR ON - %lu Hz - %lu ms - to_write %d - fifo_avail %d - fifo_len %d\n",
+		 freq, ms, elements_to_write, kfifo_avail(&fifo),  kfifo_len(&fifo));
 		spkr_play(freq);
 	}else{ //pausa o silencio
-		printk("pausa\n");
+		printk("SPKR PAUSE\n");
 		spkr_off();
 	}
-
-	printk("to_put_in_fifo: %d\tkfifo_avail= %d\tkfifo_len=%d\n", elements_to_write,kfifo_avail(&fifo), kfifo_len(&fifo));
 	
-	//despertar escritor si hay huevo
+	//Despertar escritor
 	if (elements_to_write > 0){
 		if 	(kfifo_avail(&fifo) >= buffer_threshold
 		  || kfifo_avail(&fifo) >= elements_to_write
@@ -115,12 +129,12 @@ void spkr_timer_callback( unsigned long data )
 		}
 	}
 	
-	//reprogramar sonido si hay mas de 3 en la cola, sino apagar speaker
+	//Reprogramar sonido
 	if (kfifo_len(&fifo)>3){
 		add_timer_if_not_set(ms);
 		spin_unlock_bh(&fifo_lock);
 	}else{ // no quedan elementos pendientes en kfifo y apagar el speaker
-		printk("no quedan sonidos\n");
+		printk("No quedan sonidos\n");
 		spin_unlock_bh(&fifo_lock);
 		wake_up_interruptible(&fsync_cola);
 		spkr_off();
@@ -166,7 +180,7 @@ static int device_open(struct inode *inode, struct file *filp)
 	/******************************************************************
 	 * CHECK IF WRITE OR READ -> IF WRITE, ALLOW ONLY ONE OPEN (MUTEX)
 	 *****************************************************************/
-	printk("DEVICE OPEN - ");
+	printk(KERN_ALERT"DEVICE OPEN - ");
 	if (filp->f_mode & FMODE_READ){
 		printk("READ MODE\n");
 	}else if (filp->f_mode & FMODE_WRITE){
@@ -255,7 +269,7 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 		}else{
 			kfifo_from_user(&fifo, buff+j, elements_to_write, &copied);
 		}
-		printk("COPIED: %d\n", copied);
+	
 		elements_to_write -= 4;
 	}
 
@@ -263,7 +277,7 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 
 	spin_unlock_bh(&fifo_lock);
 
-	printk(KERN_ALERT "DEVICE END\n");
+	printk(KERN_ALERT "DEVICE WRITE END\n");
 	mutex_unlock(&fsync_lock);
 	return j;
 }
@@ -276,17 +290,18 @@ static int device_fsync(struct file *filp, int datasync)
 static int device_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 #endif  
 {	
-	printk("LLamada a FSYNC\n");
+	printk(KERN_ALERT "DEVICE FSYNC\n");
 	mutex_lock(&fsync_lock);
-	if(wait_event_interruptible(fsync_cola, kfifo_is_empty(&fifo) == 1)){
+	if(wait_event_interruptible(fsync_cola, kfifo_len(&fifo) < 4)){
 		return -ERESTARTSYS;
 	}
-	mutex_lock(&fsync_lock);
+	mutex_unlock(&fsync_lock);
 	return SUCCESS;
 }
 
 static long device_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) 
 {
+	printk(KERN_ALERT "DEVICE IOCTL\n");
 	mutex_lock(&ioctl_mutex);
 	switch(cmd){
 		case SPKR_SET_MUTE_STATE:
@@ -304,12 +319,16 @@ static long device_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			break;
 		case SPKR_RESET:
 			printk("SPKR_RESET\n");
+			spin_lock_bh(&fiforeset_lock);
+			IS_RESET = 1;
+			spin_unlock_bh(&fiforeset_lock);
 			break;
 		default:     
 			mutex_unlock(&ioctl_mutex);                                          
            	return -ENOTTY;
 	}
 	mutex_unlock(&ioctl_mutex);
+	printk(KERN_ALERT"IOCTL EXIT\n");
 	return 0;
 
 }
@@ -357,6 +376,7 @@ static int init_intspkr(void)
 
 	//spinlock
 	spin_lock_init(&fifo_lock);
+	spin_lock_init(&fiforeset_lock);
 
 	//timer
 	init_timer(&timer);
