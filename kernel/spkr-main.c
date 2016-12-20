@@ -21,51 +21,61 @@ MODULE_AUTHOR("Gabriel Garcia <g.gardiles@alumnos.upm.es> and Sergio Vicente <..
 MODULE_DESCRIPTION("intspkr module for embedded system");
 MODULE_VERSION("dev");
 
+// GLOBAL CONSTANTS
 #define SUCCESS 0
 #define DEVICE_NAME "intspkr"	/* Dev name as it appears in /proc/devices   */
 
-//IOCTL constants
+// IOCTL constants
 #define MAGIC_NO '9'
 #define SPKR_SET_MUTE_STATE _IOR(MAGIC_NO, 1, int *) 
 #define SPKR_GET_MUTE_STATE _IOR(MAGIC_NO, 2, int *) 
 #define SPKR_RESET 			 _IO(MAGIC_NO, 3) 
-volatile int is_mute[1];
 
-/**	Global variables	**/
-int j;
-int x = 2;
+// Control variables
+static int elements_to_write = 0;	// Store elements to write to FIFO
+static int Device_Open_W = 0;		// Limit ammount of writes to only 1
+int is_mute[1];
 
+// Syncronization variables
+struct mutex open_mutex, fsync_lock, ioctl_mutex;
+spinlock_t fifo_lock;
+static wait_queue_head_t cola, fsync_cola;
+
+// FIFO 
+static struct kfifo fifo;
+
+// Asyncronous callback
+static struct timer_list timer;
+
+// Device creation
+static struct cdev c_dev;     	// Global variable for the char device structure
+static struct class *cl;     	// Global variable for the device class
+static dev_t midispo;			// Global variable for the device number
+
+// Incoming variables
 static int minor = 0;
 static unsigned int buffer_size = PAGE_SIZE;
 static unsigned int buffer_threshold = PAGE_SIZE;
-static int elements_to_write = 0;
-static int Device_Open_W = 0;	/* Is device open?  */
-static int local_open = 0;
-struct mutex open_mutex, ioctl_mutex;
-spinlock_t fifo_lock, fsync_lock;
-static struct kfifo fifo;
-static struct timer_list timer;
-static wait_queue_head_t cola, fsync_cola;
-
-static struct cdev c_dev;     	// Global variable for the char device structure
-static struct class *cl;     	// Global variable for the device class
-static dev_t midispo;		// Global variable for the device number
 
 module_param(minor, int, S_IRUGO);
 module_param(buffer_size, uint, S_IRUGO);
 module_param(buffer_threshold, uint, S_IRUGO);
 
-// callback variables
-unsigned char fifo_buf[4];
-unsigned long freq, ms;
-int n;
-
 void add_timer_if_not_set(unsigned long d);
 void spkr_timer_callback( unsigned long data );
 int is_memory_accessible(const char *buff, size_t count);
 
+
+
+/**
+* Asyncronous callback to play sound
+*/
 void spkr_timer_callback( unsigned long data )
 {
+	int n;
+	unsigned long freq, ms;
+	unsigned char fifo_buf[4];
+
 	spin_lock_bh(&fifo_lock);
 
 	// Skip function if there are less than 4 elements in FIFO
@@ -80,11 +90,11 @@ void spkr_timer_callback( unsigned long data )
 	freq = (fifo_buf[1]<<8)+fifo_buf[0];
 	ms = (fifo_buf[3]<<8)+fifo_buf[2];
 	
-	printk("frequency: %lu \tms: %lu\n", freq, ms);
+	printk("SET Frequency: %lu\tms: %lu\n", freq, ms);
 	//printk("fifo_buf (frequency): %02X%02X\n",fifo_buf[1],fifo_buf[0]);
 	//printk("fifo_buf (ms): %02X%02X\n",fifo_buf[3],fifo_buf[2]);
 	
-	if (is_mute){
+	if (is_mute[0]){
 		printk("MUTED\n");
 	}else if ((freq>0) && (ms > 0)){
 		spkr_play(freq);
@@ -93,11 +103,10 @@ void spkr_timer_callback( unsigned long data )
 		spkr_off();
 	}
 
-	printk("elements_to_write: %d\tkfifo_avail()= %d\n", elements_to_write,kfifo_avail(&fifo));
+	printk("to_put_in_fifo: %d\tkfifo_avail= %d\tkfifo_len=%d\n", elements_to_write,kfifo_avail(&fifo), kfifo_len(&fifo));
+	
 	//despertar escritor si hay huevo
-
 	if (elements_to_write > 0){
-		printk("elements_to_write > 0");
 		if 	(kfifo_avail(&fifo) >= buffer_threshold
 		  || kfifo_avail(&fifo) >= elements_to_write
 		  || kfifo_is_empty(&fifo)){
@@ -136,7 +145,7 @@ void add_timer_if_not_set(unsigned long msecs)
 
 int is_memory_accessible(const char *buff, size_t count)
 {
-	const char *buff_ch;
+	char buff_ch;
 	/*if(access_ok(VERIFY_READ, buff, count) != 0){
 		printk("access to memory NOT OK: %x\n", access_ok(VERIFY_READ, buff, count));
 		return 0;
@@ -164,14 +173,13 @@ static int device_open(struct inode *inode, struct file *filp)
 		printk("WRITE MODE - ");
 
 		mutex_lock(&open_mutex);
-		local_open = Device_Open_W++;
-		mutex_unlock(&open_mutex);
-
-		if (local_open){
+		if (Device_Open_W){
 			printk("BUSY\n");
+			mutex_unlock(&open_mutex);
 			return -EBUSY;
 		}
-		printk("COUNT: %d\n", local_open+1);
+		Device_Open_W++;
+		mutex_unlock(&open_mutex);
 	}
 
 	try_module_get(THIS_MODULE);
@@ -208,13 +216,15 @@ static int device_release(struct inode *inode, struct file *file)
 static ssize_t
 device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 {
+	unsigned int copied;
+	unsigned int j;
+
+	mutex_lock(&fsync_lock);
 	printk(KERN_ALERT "DEVICE WRITE START count=%d\n",(int) count);
-	
-	spin_lock_bh(&fsync_lock);
+
 	if(count < 0){
 		return -EINVAL;
 	} 
-	spin_unlock_bh(&fsync_lock);
 
 	if(is_memory_accessible(buff, count) == 0){
 		return -EFAULT;
@@ -224,10 +234,10 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 	elements_to_write = count;
 
 	//Loop through all elements in buffer and put them in kfifo
-	for(j=0; j<(int)count; j++){
+	for(j=0; j<(int)count; j+=4){
 		//printk("KFIFO_PUT %x\n", buff[j]);
 		
-		if (kfifo_avail(&fifo)==0){
+		if (kfifo_avail(&fifo)<4){
 			printk("write - kfifo lleno\n");
 			spin_unlock_bh(&fifo_lock);
 			
@@ -240,9 +250,13 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 			
 			spin_lock_bh(&fifo_lock);
 		}
-		
-		kfifo_put(&fifo, (char)buff[j]);
-		elements_to_write--;
+		if (elements_to_write>4){
+			kfifo_from_user(&fifo, buff+j, 4, &copied);
+		}else{
+			kfifo_from_user(&fifo, buff+j, elements_to_write, &copied);
+		}
+		printk("COPIED: %d\n", copied);
+		elements_to_write -= 4;
 	}
 
 	add_timer_if_not_set(200);
@@ -250,6 +264,7 @@ device_write(struct file *filp, const char *buff, size_t count, loff_t *f_pos)
 	spin_unlock_bh(&fifo_lock);
 
 	printk(KERN_ALERT "DEVICE END\n");
+	mutex_unlock(&fsync_lock);
 	return j;
 }
 
@@ -262,14 +277,13 @@ static int device_fsync(struct file *filp, loff_t start, loff_t end, int datasyn
 #endif  
 {	
 	printk("LLamada a FSYNC\n");
-	spin_lock_bh(&fsync_lock);
+	mutex_lock(&fsync_lock);
 	if(wait_event_interruptible(fsync_cola, kfifo_is_empty(&fifo) == 1)){
 		return -ERESTARTSYS;
 	}
-	spin_unlock_bh(&fsync_lock);
+	mutex_lock(&fsync_lock);
 	return SUCCESS;
 }
-
 
 static long device_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) 
 {
@@ -278,13 +292,13 @@ static long device_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		case SPKR_SET_MUTE_STATE:
 			if (copy_from_user(is_mute, (int *) arg, sizeof(int *)))     
 				return -EFAULT;  
-			if (is_mute)
+			if (is_mute[0])
 				spkr_off();
 			
 			printk("SPKR_SET_MUTE_STATE: %d\n", is_mute[0]);
 			break;
 		case SPKR_GET_MUTE_STATE:
-			printk("SPKR_GET_MUTE_STATE\n");
+			printk("SPKR_GET_MUTE_STATE: %d\n", is_mute[0]);
 			if(copy_to_user((int *)arg, is_mute, sizeof(int *)))
 				return -EFAULT;
 			break;
@@ -312,10 +326,9 @@ static const struct file_operations fops = {
 	.unlocked_ioctl = device_ioctl
 };
 
-
-
 static int init_intspkr(void)
 {    
+	unsigned int x = 2;
     // Check if buffer_size is a power of 2
 	if (buffer_size>16384){
 		buffer_size = PAGE_SIZE;
@@ -332,18 +345,18 @@ static int init_intspkr(void)
 		buffer_threshold = buffer_size;
 	}
 
-	printk("buffer_size: %d, buffer_threshold: %d\n",buffer_size,buffer_threshold);
+	printk("buffer_size: %d, buffer_threshold: %d\n", buffer_size, buffer_threshold);
 
 	/*******************************************
 	 * Inicializar Mutex, spinlock, FIFO y TIMER
 	 *******************************************/
 	//mutex
-	mutex_init(&open_mutex);
-	mutex_init(&ioctl_mutex);
+	mutex_init(&open_mutex); 	// Solo una apertura en modo write
+	mutex_init(&ioctl_mutex); 	// Solo 1 ioctl
+	mutex_init(&fsync_lock);	// Solo 1 write o solo 1 fsync
 
 	//spinlock
 	spin_lock_init(&fifo_lock);
-	spin_lock_init(&fsync_lock);
 
 	//timer
 	init_timer(&timer);

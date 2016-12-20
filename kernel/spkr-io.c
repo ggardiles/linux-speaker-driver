@@ -14,12 +14,10 @@ extern raw_spinlock_t i8253_lock;
 void set_spkr_frequency(unsigned int frequency) {
 	uint32_t count = 0;
 	unsigned long flags;
-	
-	printk(KERN_INFO "SPKR set frequency: %d  PIT: %d\n", frequency, count);
 
     //Set the PIT to the desired frequency
  	count = PIT_TICK_RATE / frequency;
-	printk(KERN_INFO "DIV: %d %d\n", count, (count >> 8));
+	printk(KERN_INFO "SPKR set frequency: %d\n", frequency);
 	raw_spin_lock_irqsave(&i8253_lock, flags);
 
 	// Configure spkr
@@ -33,11 +31,11 @@ void set_spkr_frequency(unsigned int frequency) {
 void spkr_play(unsigned int frequency){
 	uint32_t count = 0;
 	unsigned long flags;
-	printk(KERN_INFO "SPKR set frequency: %d  PIT: %d\n", frequency, count);
+	
 
     //Set the PIT to the desired frequency
  	count = PIT_TICK_RATE / frequency;
-	printk(KERN_INFO "DIV: %d %d\n", count, (count >> 8));
+	//printk(KERN_INFO "SPKR set frequency: %d\nSPKR ON\n", frequency);
 	raw_spin_lock_irqsave(&i8253_lock, flags);
 
 	// Configure spkr
@@ -47,11 +45,12 @@ void spkr_play(unsigned int frequency){
 	outb_p((count >> 8) & 0xff, 0x42);
 	outb(inb_p(0x61) | 3, 0x61);
 
+	printk(KERN_INFO "SPKR ON\n");
 	raw_spin_unlock_irqrestore(&i8253_lock, flags);
 }
 void spkr_on(void) {
 	unsigned long flags;
-	printk(KERN_INFO "SPKR ON!");
+	printk(KERN_INFO "SPKR ON\n");
 	
 	raw_spin_lock_irqsave(&i8253_lock, flags);
 	outb(inb_p(0x61) | 3, 0x61);

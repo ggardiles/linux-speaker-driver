@@ -56,9 +56,9 @@ Operaciones ioctl
 
 *Status:*
 
-- [] SET_MUTE
+- [ ] SET_MUTE
 - [x] GET_MUTE
-- [] RESET
+- [ ] RESET
 
 ## OTHER
 
