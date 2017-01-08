@@ -17,7 +17,7 @@
 
 
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_AUTHOR("Gabriel Garcia <g.gardiles@alumnos.upm.es> and Sergio Vicente <...@alumnos.upm.es");
+MODULE_AUTHOR("Gabriel Garcia <g.gardiles@alumnos.upm.es> and Sergio Vicente <sergio.vheras@alumnos.upm.es");
 MODULE_DESCRIPTION("intspkr module for embedded system");
 MODULE_VERSION("1.0.0");
 
@@ -29,7 +29,7 @@ MODULE_VERSION("1.0.0");
 #define MAGIC_NO '9'
 #define SPKR_SET_MUTE_STATE _IOR(MAGIC_NO, 1, int *) 
 #define SPKR_GET_MUTE_STATE _IOR(MAGIC_NO, 2, int *) 
-#define SPKR_RESET 			 _IO(MAGIC_NO, 3) 
+#define SPKR_RESET _IO(MAGIC_NO, 3) 
 
 // Control variables
 static int elements_to_write = 0;	// Store elements to write to FIFO
@@ -51,7 +51,7 @@ static struct timer_list timer;
 // Device creation
 static struct cdev c_dev;     	// Global variable for the char device structure
 static struct class *cl;     	// Global variable for the device class
-static dev_t midispo;			// Global variable for the device number
+static dev_t midispo;		// Global variable for the device number
 
 // Incoming variables
 static int minor = 0;
@@ -343,7 +343,7 @@ static const struct file_operations fops = {
 	.open			= device_open,
 	.release		= device_release,
 	.fsync			= device_fsync,
-	.unlocked_ioctl = device_ioctl
+	.unlocked_ioctl 	= device_ioctl
 };
 
 static int init_intspkr(void)
